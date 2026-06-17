@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>数字孪生网络建模与拥塞智能调度系统 - 在线演示</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Microsoft YaHei',sans-serif;overflow:hidden;background:#1a1a2e}
+#c{display:block}
+#dash{position:absolute;top:16px;right:16px;width:300px;background:rgba(10,10,30,0.92);border-radius:12px;padding:14px 16px;color:#e0e0e0;border:1px solid rgba(255,255,255,0.1);z-index:10;font-size:13px}
+#dash h2{font-size:15px;color:#64ffda;margin-bottom:10px;text-align:center}
+.row{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.04)}
+.val{font-weight:bold;color:#64ffda}.val.w{color:#ffab40}.val.d{color:#ff5252}
+#ctrl{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);background:rgba(10,10,30,0.9);border-radius:30px;padding:8px 20px;display:flex;align-items:center;gap:15px;z-index:10;border:1px solid rgba(255,255,255,0.15)}
+#ctrl button{background:none;border:1px solid rgba(255,255,255,0.3);color:#ccc;width:36px;height:36px;border-radius:50%;cursor:pointer;font-size:16px;transition:all 0.2s}
+#ctrl button:hover{background:rgba(100,255,218,0.15);border-color:#64ffda;color:#64ffda}
+#prog{width:120px;height:4px;background:rgba(255,255,255,0.15);border-radius:2px;cursor:pointer}
+#prog-fill{height:100%;background:#64ffda;border-radius:2px;width:0;transition:width 0.1s}
+#info{color:#aaa;font-size:11px;min-width:80px;text-align:center}
+#legend{position:absolute;bottom:24px;left:24px;background:rgba(10,10,30,0.85);border-radius:8px;padding:10px 14px;color:#bbb;font-size:11px;z-index:10}
+.grad{width:160px;height:10px;border-radius:5px;margin:3px 0}
+#loading{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#64ffda;font-size:20px;z-index:100;background:rgba(10,10,30,0.9);padding:30px 40px;border-radius:12px}
+</style>
+</head>
+<body>
+<div id="c"></div>
+<div id="loading">🚦 加载演示数据中...</div>
+<div id="dash">
+  <h2>📊 实时监控面板</h2>
+  <div class="row"><span>仿真时间</span><span class="val" id="st">--</span></div>
+  <div class="row"><span>活跃车辆</span><span class="val" id="sv">--</span></div>
+  <div class="row"><span>拥塞路段</span><span class="val d" id="sc">--</span></div>
+  <div class="row"><span>预警路段</span><span class="val w" id="sw">--</span></div>
+  <div class="row"><span>网络利用率</span><span class="val" id="su">--</span></div>
+  <div class="row"><span>DRL 调度次数</span><span class="val" id="ss">--</span></div>
+</div>
+<div id="ctrl">
+  <button id="btn-prev" title="上一帧">⏮</button>
+  <button id="btn-play" title="播放/暂停">▶</button>
+  <button id="btn-next" title="下一帧">⏭</button>
+  <div id="prog"><div id="prog-fill"></div></div>
+  <span id="info">0 / 0</span>
+  <button id="btn-speed" title="速度">1×</button>
+</div>
+<div id="legend">
+  <div>🚗 交通流量: <span style="color:#00cc44">畅通</span> → <span style="color:#ffcc00">轻度</span> → <span style="color:#ff8800">中度</span> → <span style="color:#ff2222">严重</span></div>
+  <div class="grad" style="background:linear-gradient(90deg,#00cc44,#ffcc00,#ff8800,#ff2222)"></div>
+  <div>🔵 车辆速度: <span style="color:#00aaff">高速</span> → <span style="color:#00cc66">中速</span> → <span style="color:#ff3333">低速</span></div>
+</div>
+
+<script type="importmap">
+{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js"}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+
+// ===== 场景初始化 =====
+const container = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setSize(innerWidth,innerHeight);
+renderer.shadowMap.enabled=true;
+container.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#1a1a2e');
+
+// 灯光
+scene.add(new THREE.AmbientLight('#404060',1.5));
+const sun = new THREE.DirectionalLight('#ffffff',3);
+sun.position.set(500,800,300);
+scene.add(sun);
+scene.add(new THREE.HemisphereLight('#87ceeb','#362907',0.5));
+
+// 地面
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(3000,3000),
+  new THREE.MeshStandardMaterial({color:'#2d2d3d',roughness:0.9})
+);
+ground.rotation.x=-Math.PI/2;ground.position.y=-2;ground.receiveShadow=true;
+scene.add(ground);
+
+const grid = new THREE.PolarGridHelper(800,40,30,64,'#333355','#333355');
+grid.position.y=-1.9;scene.add(grid);
+
+// 相机
+const camera = new THREE.PerspectiveCamera(55,innerWidth/innerHeight,5,5000);
+camera.position.set(450,300,-100);
+camera.lookAt(450,0,450);
+
+// 相机控制
+let target = new THREE.Vector3(450,0,450);
+let spherical = new THREE.Spherical();
+let isDragging=false,lastMouse=new THREE.Vector2();
+
+renderer.domElement.addEventListener('mousedown',e=>{
+  if(e.button===0){isDragging=true;lastMouse.set(e.clientX,e.clientY);}
+});
+window.addEventListener('mouseup',()=>isDragging=false);
+window.addEventListener('mousemove',e=>{
+  if(!isDragging)return;
+  const dx=e.clientX-lastMouse.x,dy=e.clientY-lastMouse.y;
+  lastMouse.set(e.clientX,e.clientY);
+  spherical.theta-=dx*0.005;spherical.phi-=dy*0.005;
+  spherical.phi=Math.max(0.2,Math.min(1.4,spherical.phi));
+});
+renderer.domElement.addEventListener('wheel',e=>{
+  e.preventDefault();
+  spherical.radius*=1+e.deltaY*0.001;
+  spherical.radius=Math.max(80,Math.min(2000,spherical.radius));
+},{passive:false});
+window.addEventListener('keydown',e=>{
+  const s=30;
+  if(e.key=='w')target.z-=s;if(e.key=='s')target.z+=s;
+  if(e.key=='a')target.x-=s;if(e.key=='d')target.x+=s;
+  if(e.key=='r'){target.set(450,0,450);spherical.set(500,1,1);}
+});
+
+// ===== 渲染对象 =====
+const roadMeshes={},nodeGroup=new THREE.Group(),vehicleGroup=new THREE.Group();
+scene.add(nodeGroup);scene.add(vehicleGroup);
+
+function createRoads(roads){
+  roads.forEach(r=>{
+    const path=r.path||[];
+    if(path.length<2)return;
+    const w=(r.render&&r.render.width)||6.4;
+    const g=new THREE.Group();
+    for(let i=0;i<path.length-1;i++){
+      const[x0,y0]=path[i],[x1,y1]=path[i+1];
+      const dx=x1-x0,dy=y1-y0,len=Math.sqrt(dx*dx+dy*dy);
+      if(len<0.01)continue;
+      const mx=(x0+x1)/2,my=(y0+y1)/2,ang=Math.atan2(dy,dx);
+      const geo=new THREE.PlaneGeometry(len,w);
+      const mat=new THREE.MeshStandardMaterial({color:'#444444',roughness:0.7,side:THREE.DoubleSide});
+      const mesh=new THREE.Mesh(geo,mat);
+      mesh.position.set(mx,0.06,my);
+      mesh.rotation.x=-Math.PI/2;mesh.rotation.z=ang;
+      mesh.receiveShadow=true;
+      g.add(mesh);
+    }
+    scene.add(g);roadMeshes[r.id]=g;
+  });
+}
+
+function createNodes(nodes){
+  nodes.forEach(n=>{
+    const p=n.position||[n.x||0,n.y||0,n.z||0];
+    const r=(n.render&&n.render.radius)||5;
+    const c=(n.render&&n.render.color)||'#444455';
+    const geo=new THREE.CylinderGeometry(r,r,0.3,16);
+    const mesh=new THREE.Mesh(geo,new THREE.MeshStandardMaterial({color:c,roughness:0.4,metalness:0.5}));
+    mesh.position.set(p[0],0.15,p[1]);mesh.receiveShadow=true;
+    nodeGroup.add(mesh);
+    if(n.hasTrafficLight){
+      const pole=new THREE.Mesh(
+        new THREE.CylinderGeometry(0.4,0.5,6,8),
+        new THREE.MeshStandardMaterial({color:'#333'})
+      );
+      pole.position.set(p[0],3,p[1]);nodeGroup.add(pole);
+      const light=new THREE.Mesh(
+        new THREE.SphereGeometry(1.2,8,8),
+        new THREE.MeshStandardMaterial({color:'#0f0',emissive:'#0f0',emissiveIntensity:1})
+      );
+      light.position.set(p[0],6.5,p[1]);nodeGroup.add(light);
+    }
+  });
+}
+
+function updateVehicles(vehicles){
+  while(vehicleGroup.children.length>0){
+    const c=vehicleGroup.children[0];
+    c.material?.dispose();c.geometry?.dispose();
+    vehicleGroup.remove(c);
+  }
+  if(!vehicles)return;
+  vehicles.forEach(v=>{
+    const geo=new THREE.BoxGeometry(10,4,5);
+    const mat=new THREE.MeshStandardMaterial({roughness:0.15,metalness:0.8,emissiveIntensity:0.4});
+    const mesh=new THREE.Mesh(geo,mat);
+    const vx=v.x!==undefined?v.x:(v.position?.[0]||0);
+    const vy=v.y!==undefined?v.y:(v.position?.[1]||0);
+    mesh.position.set(vx,2,vy);
+    const ang=v.angle||0;
+    mesh.rotation.set(0,THREE.MathUtils.degToRad(90-ang),0);
+    const spd=v.speed||0,ratio=Math.min(spd/13.9,1);
+    let col;
+    if(ratio>0.7)col=0x00aaff;else if(ratio>0.4)col=0x00cc66;
+    else if(ratio>0.1)col=0xffaa00;else col=0xff3333;
+    mat.color.set(col);mat.emissive?.set(col);
+    vehicleGroup.add(mesh);
+  });
+}
+
+function updateRoadColors(edges){
+  const list=Array.isArray(edges)?edges:Object.values(edges);
+  list.forEach(e=>{
+    const g=roadMeshes[e.id||e.link_id];
+    if(!g)return;
+    const lvl=e.congestion_level||0;
+    const cols={0:'#00cc44',1:'#ffcc00',2:'#ff8800',3:'#ff2222'};
+    const c=new THREE.Color(cols[lvl]||'#00cc44');
+    g.traverse(ch=>{if(ch.isMesh&&ch.material.color)ch.material.color.set(c);});
+  });
+}
+
+// ===== 播放器 =====
+let demoData=null,currentFrame=0,playing=false,speed=1,timer=null;
+
+function loadFrame(i){
+  if(!demoData||i<0||i>=demoData.frames.length)return;
+  currentFrame=i;
+  const f=demoData.frames[i];
+  updateVehicles(f.vehicles);
+  updateRoadColors(f.edges);
+  document.getElementById('st').textContent=Math.floor(f.time)+'s';
+  document.getElementById('sv').textContent=f.vehicles?.length||0;
+  document.getElementById('sc').textContent=f.congested_links||0;
+  document.getElementById('sw').textContent=f.warning_links||0;
+  document.getElementById('su').textContent=(f.avg_utilization*100).toFixed(1)+'%';
+  document.getElementById('ss').textContent=f.schedule_actions||0;
+  document.getElementById('prog-fill').style.width=(i/(demoData.frames.length-1)*100)+'%';
+  document.getElementById('info').textContent=(i+1)+' / '+demoData.frames.length;
+}
+
+function togglePlay(){
+  playing=!playing;
+  document.getElementById('btn-play').textContent=playing?'⏸':'▶';
+  if(playing){
+    timer=setInterval(()=>{
+      const next=currentFrame+1;
+      if(next>=demoData.frames.length){playing=false;clearInterval(timer);
+        document.getElementById('btn-play').textContent='▶';return;}
+      loadFrame(next);
+    },1000/speed);
+  }else{clearInterval(timer);}
+}
+
+// ===== 加载数据 =====
+fetch('demo_data.json')
+  .then(r=>r.json())
+  .then(data=>{
+    demoData=data;
+    document.getElementById('loading').style.display='none';
+    createRoads(data.scene.roads||[]);
+    createNodes(data.scene.nodes||[]);
+    loadFrame(0);
+    // 自动开始播放
+    setTimeout(togglePlay,500);
+  })
+  .catch(err=>{
+    document.getElementById('loading').textContent='❌ 加载失败: '+err.message;
+    console.error(err);
+  });
+
+// 控制按钮
+document.getElementById('btn-play').addEventListener('click',togglePlay);
+document.getElementById('btn-prev').addEventListener('click',()=>{
+  playing=false;clearInterval(timer);document.getElementById('btn-play').textContent='▶';
+  loadFrame(Math.max(0,currentFrame-1));
+});
+document.getElementById('btn-next').addEventListener('click',()=>{
+  playing=false;clearInterval(timer);document.getElementById('btn-play').textContent='▶';
+  loadFrame(Math.min(demoData?.frames.length-1||0,currentFrame+1));
+});
+document.getElementById('prog').addEventListener('click',e=>{
+  if(!demoData)return;
+  const rect=e.target.getBoundingClientRect();
+  const pct=(e.clientX-rect.left)/rect.width;
+  loadFrame(Math.floor(pct*(demoData.frames.length-1)));
+});
+document.getElementById('btn-speed').addEventListener('click',function(){
+  speed=speed===1?2:speed===2?4:1;
+  this.textContent=speed+'×';
+  if(playing){clearInterval(timer);timer=setInterval(()=>{
+    const next=currentFrame+1;
+    if(next>=demoData.frames.length){playing=false;clearInterval(timer);
+      document.getElementById('btn-play').textContent='▶';return;}
+    loadFrame(next);
+  },1000/speed);}
+});
+
+// ===== 渲染循环 =====
+function animate(){
+  requestAnimationFrame(animate);
+  const sphi=Math.sin(spherical.phi);
+  camera.position.set(
+    target.x+spherical.radius*sphi*Math.sin(spherical.theta),
+    target.y+spherical.radius*Math.cos(spherical.phi),
+    target.z+spherical.radius*sphi*Math.cos(spherical.theta)
+  );
+  camera.lookAt(target);
+  renderer.render(scene,camera);
+}
+spherical.setFromVector3(new THREE.Vector3().subVectors(camera.position,target));
+animate();
+window.addEventListener('resize',()=>{
+  camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+});
+</script>
+</body>
+</html>
