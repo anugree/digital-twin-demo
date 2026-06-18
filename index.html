@@ -194,13 +194,17 @@ function updateVehicles(vehicles){
 }
 
 function updateRoadColors(edges){
-  const list=Array.isArray(edges)?edges:Object.values(edges);
-  list.forEach(e=>{
-    const g=roadMeshes[e.id||e.link_id];
-    if(!g)return;
-    const lvl=e.congestion_level||0;
-    const cols={0:'#00cc44',1:'#ffcc00',2:'#ff8800',3:'#ff2222'};
-    const c=new THREE.Color(cols[lvl]||'#00cc44');
+  // edges 可能是 {e0:{c:0,o:0,s:10}} 或 [{id, congestion_level}]
+  const entries = Array.isArray(edges) ? edges : Object.entries(edges);
+  entries.forEach(entry=>{
+    let id, e;
+    if (Array.isArray(entry)) { id = entry[0]; e = entry[1]; }
+    else { id = e.id || e.link_id; }
+    const g = roadMeshes[id];
+    if (!g) return;
+    const lvl = e.congestion_level ?? e.c ?? 0;
+    const cols = {0:'#00cc44',1:'#ffcc00',2:'#ff8800',3:'#ff2222'};
+    const c = new THREE.Color(cols[lvl]||'#00cc44');
     g.traverse(ch=>{if(ch.isMesh&&ch.material.color)ch.material.color.set(c);});
   });
 }
